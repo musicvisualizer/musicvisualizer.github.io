@@ -7,7 +7,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <link rel="icon" type="image/x-icon" href="favicon.ico"/>
-    <meta name="description" content="Music Visualizer"> 
+    <meta name="description" content="Music Visualizer">
     <title>Music Visualizer</title>
     <style>
         * {
@@ -378,6 +378,11 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
 
         .control-btn:hover {
             background: var(--border);
+        }
+
+        .control-btn.active {
+            color: var(--primary);
+            border-color: var(--primary);
         }
 
         .control-btn svg {
@@ -1150,8 +1155,12 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             load() {
                 const saved = localStorage.getItem('musicVisualizerState');
                 if (saved) {
-                    const state = JSON.parse(saved);
-                    Object.assign(this, state);
+                    try {
+                        const state = JSON.parse(saved);
+                        Object.assign(this, state);
+                    } catch (e) {
+                        console.error('Failed to load state:', e);
+                    }
                 }
             }
         };
@@ -1162,7 +1171,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 this.dbName = 'MusicVisualizerDB';
                 this.storeName = 'audioFiles';
                 this.db = null;
-                this.maxStorage = 50 * 1024 * 1024; // 50MB limit
+                this.maxStorage = 50 * 1024 * 1024;
             }
 
             async init() {
@@ -1223,7 +1232,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                     const store = transaction.objectStore(this.storeName);
                     const request = store.getAll();
                     
-                    request.onsuccess = () => resolve(request.result);
+                    request.onsuccess = () => resolve(request.result || []);
                     request.onerror = () => reject(request.error);
                 });
             }
@@ -1254,57 +1263,102 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 this.analyser = null;
                 this.source = null;
                 this.audio = new Audio();
+                this.audio.crossOrigin = 'anonymous';
                 this.dataArray = null;
+                this.frequencyData = null;
                 this.bufferLength = 0;
                 this.isInitialized = false;
                 this.animationId = null;
                 this.particles = [];
+                this.isConnected = false;
                 
                 this.resize();
                 window.addEventListener('resize', () => this.resize());
+                
+                // Start idle animation
+                this.animateIdle();
             }
 
             resize() {
-                this.canvas.width = this.canvas.offsetWidth * window.devicePixelRatio;
-                this.canvas.height = this.canvas.offsetHeight * window.devicePixelRatio;
-                this.ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-                this.width = this.canvas.offsetWidth;
-                this.height = this.canvas.offsetHeight;
+                const container = this.canvas.parentElement;
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+                const dpr = window.devicePixelRatio || 1;
+                
+                this.canvas.width = width * dpr;
+                this.canvas.height = height * dpr;
+                this.canvas.style.width = width + 'px';
+                this.canvas.style.height = height + 'px';
+                
+                this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+                this.ctx.scale(dpr, dpr);
+                
+                this.width = width;
+                this.height = height;
             }
 
             async init() {
                 if (this.isInitialized) return;
                 
-                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                this.analyser = this.audioContext.createAnalyser();
-                this.analyser.fftSize = 2048;
-                this.bufferLength = this.analyser.frequencyBinCount;
-                this.dataArray = new Uint8Array(this.bufferLength);
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 2048;
+                    this.analyser.smoothingTimeConstant = 0.8;
+                    this.bufferLength = this.analyser.frequencyBinCount;
+                    this.dataArray = new Uint8Array(this.bufferLength);
+                    this.frequencyData = new Uint8Array(this.bufferLength);
+                    
+                    this.isInitialized = true;
+                } catch (e) {
+                    console.error('Failed to initialize audio context:', e);
+                }
+            }
+
+            connectAudio() {
+                if (this.isConnected || !this.audioContext) return;
                 
-                this.source = this.audioContext.createMediaElementSource(this.audio);
-                this.source.connect(this.analyser);
-                this.analyser.connect(this.audioContext.destination);
-                
-                this.isInitialized = true;
+                try {
+                    this.source = this.audioContext.createMediaElementSource(this.audio);
+                    this.source.connect(this.analyser);
+                    this.analyser.connect(this.audioContext.destination);
+                    this.isConnected = true;
+                } catch (e) {
+                    console.error('Failed to connect audio:', e);
+                }
             }
 
             async loadTrack(file) {
                 await this.init();
                 
-                if (file.data) {
-                    const blob = new Blob([file.data], { type: file.type });
-                    this.audio.src = URL.createObjectURL(blob);
-                } else {
-                    this.audio.src = URL.createObjectURL(file);
+                // Stop current animation
+                if (this.animationId) {
+                    cancelAnimationFrame(this.animationId);
                 }
                 
-                return new Promise((resolve) => {
+                // Create blob URL
+                let url;
+                if (file.data) {
+                    const blob = new Blob([file.data], { type: file.type || 'audio/mpeg' });
+                    url = URL.createObjectURL(blob);
+                } else {
+                    url = URL.createObjectURL(file);
+                }
+                
+                // Set audio source
+                this.audio.src = url;
+                
+                // Connect audio if not already connected
+                this.connectAudio();
+                
+                return new Promise((resolve, reject) => {
                     this.audio.onloadedmetadata = () => resolve();
+                    this.audio.onerror = (e) => reject(e);
                 });
             }
 
             play() {
-                if (this.audioContext?.state === 'suspended') {
+                if (this.audioContext && this.audioContext.state === 'suspended') {
                     this.audioContext.resume();
                 }
                 this.audio.play();
@@ -1316,11 +1370,13 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             }
 
             setVolume(value) {
-                this.audio.volume = value / 100;
+                this.audio.volume = Math.max(0, Math.min(1, value / 100));
             }
 
             seek(percent) {
-                this.audio.currentTime = (percent / 100) * this.audio.duration;
+                if (this.audio.duration) {
+                    this.audio.currentTime = (percent / 100) * this.audio.duration;
+                }
             }
 
             getProgress() {
@@ -1329,7 +1385,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             }
 
             getCurrentTime() {
-                return this.formatTime(this.audio.currentTime);
+                return this.formatTime(this.audio.currentTime || 0);
             }
 
             getDuration() {
@@ -1337,74 +1393,117 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             }
 
             formatTime(seconds) {
+                if (isNaN(seconds)) return '0:00';
                 const mins = Math.floor(seconds / 60);
                 const secs = Math.floor(seconds % 60);
                 return `${mins}:${secs.toString().padStart(2, '0')}`;
             }
 
+            animateIdle() {
+                const drawIdle = () => {
+                    if (this.audio && !this.audio.paused) return;
+                    
+                    this.animationId = requestAnimationFrame(drawIdle);
+                    this.drawBackground();
+                    
+                    // Draw subtle idle animation
+                    const time = Date.now() / 1000;
+                    const barCount = AppState.barCount;
+                    const barWidth = this.width / barCount;
+                    
+                    for (let i = 0; i < barCount; i++) {
+                        const height = Math.sin(time * 2 + i * 0.1) * 10 + 15;
+                        const x = i * barWidth;
+                        const y = this.height - height;
+                        
+                        this.ctx.fillStyle = this.hexToRgba(this.getColor(i, barCount), 0.3);
+                        this.ctx.fillRect(x + 1, y, barWidth - 2, height);
+                    }
+                };
+                
+                drawIdle();
+            }
+
             animate() {
-                this.animationId = requestAnimationFrame(() => this.animate());
-                
-                this.analyser.smoothingTimeConstant = AppState.smoothing / 100;
-                this.analyser.getByteFrequencyData(this.dataArray);
-                
-                this.drawBackground();
-                
-                switch (AppState.vizMode) {
-                    case 'bars':
-                        this.drawBars();
-                        break;
-                    case 'wave':
-                        this.drawWave();
-                        break;
-                    case 'circular':
-                        this.drawCircular();
-                        break;
-                    case 'particles':
-                        this.drawParticles();
-                        break;
-                    case 'spectrum':
-                        this.drawSpectrum();
-                        break;
+                if (this.animationId) {
+                    cancelAnimationFrame(this.animationId);
                 }
+                
+                const draw = () => {
+                    this.animationId = requestAnimationFrame(draw);
+                    
+                    if (this.analyser) {
+                        this.analyser.smoothingTimeConstant = AppState.smoothing / 100;
+                        this.analyser.getByteFrequencyData(this.frequencyData);
+                        this.analyser.getByteTimeDomainData(this.dataArray);
+                    }
+                    
+                    this.drawBackground();
+                    
+                    switch (AppState.vizMode) {
+                        case 'bars':
+                            this.drawBars();
+                            break;
+                        case 'wave':
+                            this.drawWave();
+                            break;
+                        case 'circular':
+                            this.drawCircular();
+                            break;
+                        case 'particles':
+                            this.drawParticles();
+                            break;
+                        case 'spectrum':
+                            this.drawSpectrum();
+                            break;
+                        default:
+                            this.drawBars();
+                    }
+                };
+                
+                draw();
             }
 
             drawBackground() {
-                const avgFreq = this.dataArray.reduce((a, b) => a + b, 0) / this.dataArray.length;
+                this.ctx.clearRect(0, 0, this.width, this.height);
+                
+                let avgFreq = 0;
+                if (this.frequencyData) {
+                    avgFreq = this.frequencyData.reduce((a, b) => a + b, 0) / this.frequencyData.length;
+                }
                 
                 switch (AppState.background) {
                     case 'dark':
                         this.ctx.fillStyle = '#0f0f1a';
+                        this.ctx.fillRect(0, 0, this.width, this.height);
                         break;
                     case 'gradient':
                         const gradient = this.ctx.createRadialGradient(
                             this.width / 2, this.height / 2, 0,
-                            this.width / 2, this.height / 2, this.width / 2
+                            this.width / 2, this.height / 2, Math.max(this.width, this.height) / 2
                         );
                         gradient.addColorStop(0, '#1a1a2e');
                         gradient.addColorStop(1, '#0f0f1a');
                         this.ctx.fillStyle = gradient;
+                        this.ctx.fillRect(0, 0, this.width, this.height);
                         break;
                     case 'reactive':
-                        const intensity = avgFreq / 255 * 0.3;
-                        const [c1, c2] = AppState.colors;
-                        this.ctx.fillStyle = `rgba(15, 15, 26, ${1 - intensity})`;
+                        this.ctx.fillStyle = '#0f0f1a';
+                        this.ctx.fillRect(0, 0, this.width, this.height);
+                        
+                        const intensity = avgFreq / 255 * 0.2;
+                        const reactiveGradient = this.ctx.createRadialGradient(
+                            this.width / 2, this.height / 2, 0,
+                            this.width / 2, this.height / 2, Math.max(this.width, this.height) / 2
+                        );
+                        reactiveGradient.addColorStop(0, this.hexToRgba(AppState.colors[0] === 'rainbow' ? '#6366f1' : AppState.colors[0], intensity));
+                        reactiveGradient.addColorStop(1, 'transparent');
+                        this.ctx.fillStyle = reactiveGradient;
+                        this.ctx.fillRect(0, 0, this.width, this.height);
                         break;
-                }
-                
-                this.ctx.fillRect(0, 0, this.width, this.height);
-                
-                if (AppState.background === 'reactive') {
-                    const avgFreq = this.dataArray.reduce((a, b) => a + b, 0) / this.dataArray.length;
-                    const intensity = avgFreq / 255 * 0.15;
-                    const gradient = this.ctx.createRadialGradient(
-                        this.width / 2, this.height / 2, 0,
-                        this.width / 2, this.height / 2, this.width / 2
-                    );
-                    gradient.addColorStop(0, this.hexToRgba(AppState.colors[0], intensity));
-                    gradient.addColorStop(1, 'transparent');
-                    this.ctx.fillStyle = gradient;
-                    this.ctx.fillRect(0, 0, this.width, this.height);
+                    default:
+                        this.ctx.fillStyle = '#0f0f1a';
+                        this.ctx.fillRect(0, 0, this.width, this.height);
                 }
             }
 
@@ -1420,166 +1519,208 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             }
 
             interpolateColor(color1, color2, ratio) {
-                const r1 = parseInt(color1.slice(1, 3), 16);
-                const g1 = parseInt(color1.slice(3, 5), 16);
-                const b1 = parseInt(color1.slice(5, 7), 16);
-                const r2 = parseInt(color2.slice(1, 3), 16);
-                const g2 = parseInt(color2.slice(3, 5), 16);
-                const b2 = parseInt(color2.slice(5, 7), 16);
-                
-                const r = Math.round(r1 + (r2 - r1) * ratio);
-                const g = Math.round(g1 + (g2 - g1) * ratio);
-                const b = Math.round(b1 + (b2 - b1) * ratio);
-                
-                return `rgb(${r}, ${g}, ${b})`;
+                try {
+                    const r1 = parseInt(color1.slice(1, 3), 16);
+                    const g1 = parseInt(color1.slice(3, 5), 16);
+                    const b1 = parseInt(color1.slice(5, 7), 16);
+                    const r2 = parseInt(color2.slice(1, 3), 16);
+                    const g2 = parseInt(color2.slice(3, 5), 16);
+                    const b2 = parseInt(color2.slice(5, 7), 16);
+                    
+                    const r = Math.round(r1 + (r2 - r1) * ratio);
+                    const g = Math.round(g1 + (g2 - g1) * ratio);
+                    const b = Math.round(b1 + (b2 - b1) * ratio);
+                    
+                    return `rgb(${r}, ${g}, ${b})`;
+                } catch (e) {
+                    return color1;
+                }
             }
 
             hexToRgba(hex, alpha) {
-                const r = parseInt(hex.slice(1, 3), 16);
-                const g = parseInt(hex.slice(3, 5), 16);
-                const b = parseInt(hex.slice(5, 7), 16);
-                return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+                if (hex.startsWith('hsl')) {
+                    return hex.replace(')', `, ${alpha})`).replace('hsl', 'hsla');
+                }
+                if (hex.startsWith('rgb')) {
+                    return hex.replace(')', `, ${alpha})`).replace('rgb', 'rgba');
+                }
+                try {
+                    const r = parseInt(hex.slice(1, 3), 16);
+                    const g = parseInt(hex.slice(3, 5), 16);
+                    const b = parseInt(hex.slice(5, 7), 16);
+                    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+                } catch (e) {
+                    return `rgba(99, 102, 241, ${alpha})`;
+                }
             }
 
             drawBars() {
+                if (!this.frequencyData) return;
+                
                 const barCount = AppState.barCount;
                 const barWidth = this.width / barCount;
-                const gap = 2;
+                const gap = Math.max(1, barWidth * 0.1);
                 const sensitivity = AppState.sensitivity / 100;
+                const maxHeight = this.height * 0.85;
                 
                 for (let i = 0; i < barCount; i++) {
-                    const dataIndex = Math.floor((i / barCount) * this.bufferLength);
-                    const value = this.dataArray[dataIndex] * sensitivity;
-                    const barHeight = (value / 255) * this.height * 0.8;
+                    // Map bar index to frequency data index (use lower frequencies more)
+                    const freqIndex = Math.floor(Math.pow(i / barCount, 1.5) * (this.bufferLength / 2));
+                    const value = this.frequencyData[freqIndex] || 0;
+                    const normalizedValue = (value / 255) * sensitivity;
+                    const barHeight = Math.max(2, normalizedValue * maxHeight);
                     
                     const x = i * barWidth;
                     const y = this.height - barHeight;
                     
+                    // Create gradient for bar
                     const gradient = this.ctx.createLinearGradient(x, this.height, x, y);
-                    gradient.addColorStop(0, this.getColor(i, barCount));
-                    gradient.addColorStop(1, this.hexToRgba(this.getColor(i, barCount), 0.3));
+                    const color = this.getColor(i, barCount);
+                    gradient.addColorStop(0, color);
+                    gradient.addColorStop(1, this.hexToRgba(color, 0.4));
                     
                     this.ctx.fillStyle = gradient;
                     this.ctx.fillRect(x + gap / 2, y, barWidth - gap, barHeight);
                     
-                    // Reflection
-                    this.ctx.fillStyle = this.hexToRgba(this.getColor(i, barCount), 0.1);
+                    // Draw reflection
+                    const reflectionGradient = this.ctx.createLinearGradient(x, this.height, x, this.height + barHeight * 0.3);
+                    reflectionGradient.addColorStop(0, this.hexToRgba(color, 0.2));
+                    reflectionGradient.addColorStop(1, 'transparent');
+                    this.ctx.fillStyle = reflectionGradient;
                     this.ctx.fillRect(x + gap / 2, this.height, barWidth - gap, barHeight * 0.3);
                 }
             }
 
             drawWave() {
+                if (!this.dataArray) return;
+                
                 const sensitivity = AppState.sensitivity / 100;
                 const sliceWidth = this.width / this.bufferLength;
                 
-                // Draw multiple waves for depth
+                // Draw multiple waves
                 for (let wave = 0; wave < 3; wave++) {
                     this.ctx.beginPath();
-                    this.ctx.moveTo(0, this.height / 2);
                     
+                    let x = 0;
                     for (let i = 0; i < this.bufferLength; i++) {
-                        const v = (this.dataArray[i] / 128.0) * sensitivity;
-                        const y = (v * this.height / 4) + this.height / 2;
-                        const x = i * sliceWidth;
+                        const v = (this.dataArray[i] / 128.0 - 1) * sensitivity;
+                        const y = (v * this.height / 3) + this.height / 2 + wave * 5;
                         
                         if (i === 0) {
-                            this.ctx.moveTo(x, y + wave * 10);
+                            this.ctx.moveTo(x, y);
                         } else {
-                            this.ctx.lineTo(x, y + wave * 10);
+                            this.ctx.lineTo(x, y);
                         }
+                        x += sliceWidth;
                     }
                     
-                    this.ctx.strokeStyle = this.hexToRgba(this.getColor(wave, 3), 0.8 - wave * 0.2);
+                    const color = this.getColor(wave, 3);
+                    this.ctx.strokeStyle = this.hexToRgba(color, 0.8 - wave * 0.2);
                     this.ctx.lineWidth = 3 - wave;
                     this.ctx.stroke();
                 }
                 
-                // Fill area under wave
+                // Fill under the wave
                 this.ctx.beginPath();
                 this.ctx.moveTo(0, this.height / 2);
                 
+                let x = 0;
                 for (let i = 0; i < this.bufferLength; i++) {
-                    const v = (this.dataArray[i] / 128.0) * sensitivity;
-                    const y = (v * this.height / 4) + this.height / 2;
-                    const x = i * sliceWidth;
+                    const v = (this.dataArray[i] / 128.0 - 1) * sensitivity;
+                    const y = (v * this.height / 3) + this.height / 2;
                     this.ctx.lineTo(x, y);
+                    x += sliceWidth;
                 }
                 
                 this.ctx.lineTo(this.width, this.height);
                 this.ctx.lineTo(0, this.height);
                 this.ctx.closePath();
                 
-                const gradient = this.ctx.createLinearGradient(0, this.height / 2, 0, this.height);
-                gradient.addColorStop(0, this.hexToRgba(AppState.colors[0], 0.3));
-                gradient.addColorStop(1, 'transparent');
-                this.ctx.fillStyle = gradient;
+                const fillGradient = this.ctx.createLinearGradient(0, this.height / 2, 0, this.height);
+                fillGradient.addColorStop(0, this.hexToRgba(AppState.colors[0] === 'rainbow' ? '#6366f1' : AppState.colors[0], 0.3));
+                fillGradient.addColorStop(1, 'transparent');
+                this.ctx.fillStyle = fillGradient;
                 this.ctx.fill();
             }
 
             drawCircular() {
+                if (!this.frequencyData) return;
+                
                 const centerX = this.width / 2;
                 const centerY = this.height / 2;
-                const radius = Math.min(this.width, this.height) * 0.25;
+                const baseRadius = Math.min(this.width, this.height) * 0.2;
                 const sensitivity = AppState.sensitivity / 100;
-                const bars = 180;
+                const bars = 128;
                 
+                // Draw bars radiating outward
                 for (let i = 0; i < bars; i++) {
-                    const dataIndex = Math.floor((i / bars) * this.bufferLength);
-                    const value = this.dataArray[dataIndex] * sensitivity;
-                    const barHeight = (value / 255) * radius;
+                    const freqIndex = Math.floor((i / bars) * (this.bufferLength / 2));
+                    const value = this.frequencyData[freqIndex] || 0;
+                    const barHeight = (value / 255) * baseRadius * sensitivity;
                     
                     const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
-                    const x1 = centerX + Math.cos(angle) * radius;
-                    const y1 = centerY + Math.sin(angle) * radius;
-                    const x2 = centerX + Math.cos(angle) * (radius + barHeight);
-                    const y2 = centerY + Math.sin(angle) * (radius + barHeight);
+                    const x1 = centerX + Math.cos(angle) * baseRadius;
+                    const y1 = centerY + Math.sin(angle) * baseRadius;
+                    const x2 = centerX + Math.cos(angle) * (baseRadius + barHeight);
+                    const y2 = centerY + Math.sin(angle) * (baseRadius + barHeight);
                     
-                    const gradient = this.ctx.createLinearGradient(x1, y1, x2, y2);
-                    gradient.addColorStop(0, this.getColor(i, bars));
-                    gradient.addColorStop(1, this.hexToRgba(this.getColor(i, bars), 0.3));
+                    const color = this.getColor(i, bars);
                     
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
                     this.ctx.lineTo(x2, y2);
-                    this.ctx.strokeStyle = gradient;
-                    this.ctx.lineWidth = 3;
+                    this.ctx.strokeStyle = color;
+                    this.ctx.lineWidth = Math.max(2, (Math.PI * 2 * baseRadius) / bars - 1);
                     this.ctx.lineCap = 'round';
                     this.ctx.stroke();
                 }
                 
-                // Inner circle glow
-                const avgFreq = this.dataArray.reduce((a, b) => a + b, 0) / this.dataArray.length;
-                const glowRadius = radius * 0.8 + (avgFreq / 255) * 20;
+                // Draw inner glow
+                const avgFreq = this.frequencyData.reduce((a, b) => a + b, 0) / this.frequencyData.length;
+                const glowSize = baseRadius * 0.8 + (avgFreq / 255) * baseRadius * 0.3;
                 
                 const glowGradient = this.ctx.createRadialGradient(
                     centerX, centerY, 0,
-                    centerX, centerY, glowRadius
+                    centerX, centerY, glowSize
                 );
-                glowGradient.addColorStop(0, this.hexToRgba(AppState.colors[0], 0.3));
-                glowGradient.addColorStop(0.5, this.hexToRgba(AppState.colors[1], 0.1));
+                const color1 = AppState.colors[0] === 'rainbow' ? '#6366f1' : AppState.colors[0];
+                const color2 = AppState.colors[0] === 'rainbow' ? '#ec4899' : AppState.colors[1];
+                glowGradient.addColorStop(0, this.hexToRgba(color1, 0.4));
+                glowGradient.addColorStop(0.5, this.hexToRgba(color2, 0.2));
                 glowGradient.addColorStop(1, 'transparent');
                 
                 this.ctx.beginPath();
-                this.ctx.arc(centerX, centerY, glowRadius, 0, Math.PI * 2);
+                this.ctx.arc(centerX, centerY, glowSize, 0, Math.PI * 2);
                 this.ctx.fillStyle = glowGradient;
+                this.ctx.fill();
+                
+                // Draw center circle
+                this.ctx.beginPath();
+                this.ctx.arc(centerX, centerY, baseRadius * 0.3, 0, Math.PI * 2);
+                this.ctx.fillStyle = this.hexToRgba(color1, 0.8);
                 this.ctx.fill();
             }
 
             drawParticles() {
-                const avgFreq = this.dataArray.reduce((a, b) => a + b, 0) / this.dataArray.length;
-                const sensitivity = AppState.sensitivity / 100;
+                if (!this.frequencyData) return;
                 
-                // Add new particles based on audio intensity
-                if (avgFreq > 100) {
-                    for (let i = 0; i < Math.floor(avgFreq / 30); i++) {
+                const avgFreq = this.frequencyData.reduce((a, b) => a + b, 0) / this.frequencyData.length;
+                const sensitivity = AppState.sensitivity / 100;
+                const bassFreq = this.frequencyData.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
+                
+                // Add particles based on bass frequency
+                if (bassFreq > 80) {
+                    const particleCount = Math.floor((bassFreq / 255) * 5 * sensitivity);
+                    for (let i = 0; i < particleCount; i++) {
                         this.particles.push({
                             x: Math.random() * this.width,
                             y: this.height + 10,
-                            vx: (Math.random() - 0.5) * 4,
-                            vy: -Math.random() * (avgFreq / 30) * sensitivity,
-                            size: Math.random() * 4 + 2,
+                            vx: (Math.random() - 0.5) * 6,
+                            vy: -(Math.random() * 8 + 4) * sensitivity,
+                            size: Math.random() * 6 + 2,
                             color: this.getColor(Math.floor(Math.random() * 10), 10),
-                            life: 1
+                            life: 1,
+                            decay: 0.008 + Math.random() * 0.01
                         });
                     }
                 }
@@ -1588,89 +1729,96 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 this.particles = this.particles.filter(p => {
                     p.x += p.vx;
                     p.y += p.vy;
-                    p.vy += 0.1;
-                    p.life -= 0.01;
+                    p.vy += 0.15; // gravity
+                    p.life -= p.decay;
                     
-                    if (p.life <= 0) return false;
+                    if (p.life <= 0 || p.y > this.height + 50) return false;
                     
+                    // Main particle
                     this.ctx.beginPath();
                     this.ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
                     this.ctx.fillStyle = this.hexToRgba(p.color, p.life);
                     this.ctx.fill();
                     
-                    // Glow effect
+                    // Glow
                     this.ctx.beginPath();
-                    this.ctx.arc(p.x, p.y, p.size * p.life * 2, 0, Math.PI * 2);
-                    this.ctx.fillStyle = this.hexToRgba(p.color, p.life * 0.3);
+                    this.ctx.arc(p.x, p.y, p.size * p.life * 2.5, 0, Math.PI * 2);
+                    this.ctx.fillStyle = this.hexToRgba(p.color, p.life * 0.2);
                     this.ctx.fill();
                     
                     return true;
                 });
                 
                 // Limit particles
-                if (this.particles.length > 500) {
-                    this.particles = this.particles.slice(-500);
+                if (this.particles.length > 300) {
+                    this.particles = this.particles.slice(-300);
                 }
                 
                 // Draw frequency bars at bottom
-                const barCount = 32;
+                const barCount = 48;
                 const barWidth = this.width / barCount;
                 
                 for (let i = 0; i < barCount; i++) {
-                    const dataIndex = Math.floor((i / barCount) * this.bufferLength);
-                    const value = this.dataArray[dataIndex] * sensitivity;
-                    const barHeight = (value / 255) * 50;
+                    const freqIndex = Math.floor((i / barCount) * (this.bufferLength / 2));
+                    const value = this.frequencyData[freqIndex] || 0;
+                    const barHeight = (value / 255) * 80 * sensitivity;
                     
-                    this.ctx.fillStyle = this.hexToRgba(this.getColor(i, barCount), 0.3);
+                    const color = this.getColor(i, barCount);
+                    this.ctx.fillStyle = this.hexToRgba(color, 0.4);
                     this.ctx.fillRect(i * barWidth, this.height - barHeight, barWidth - 2, barHeight);
                 }
             }
 
             drawSpectrum() {
-                const sensitivity = AppState.sensitivity / 100;
+                if (!this.frequencyData) return;
                 
-                // Draw spectrogram style
-                const barCount = 128;
+                const sensitivity = AppState.sensitivity / 100;
+                const barCount = 96;
                 const barWidth = this.width / barCount;
+                const maxHeight = this.height * 0.45;
                 
                 for (let i = 0; i < barCount; i++) {
-                    const dataIndex = Math.floor((i / barCount) * this.bufferLength);
-                    const value = this.dataArray[dataIndex] * sensitivity;
-                    const barHeight = (value / 255) * this.height;
+                    const freqIndex = Math.floor(Math.pow(i / barCount, 1.3) * (this.bufferLength / 2));
+                    const value = this.frequencyData[freqIndex] || 0;
+                    const barHeight = (value / 255) * maxHeight * sensitivity;
                     
-                    // Mirror effect
-                    const gradient = this.ctx.createLinearGradient(0, this.height / 2, 0, this.height / 2 - barHeight / 2);
-                    gradient.addColorStop(0, this.getColor(i, barCount));
-                    gradient.addColorStop(1, this.hexToRgba(this.getColor(i, barCount), 0.1));
+                    const color = this.getColor(i, barCount);
+                    const x = i * barWidth;
                     
-                    this.ctx.fillStyle = gradient;
+                    // Top half (going up from center)
+                    const topGradient = this.ctx.createLinearGradient(x, this.height / 2, x, this.height / 2 - barHeight);
+                    topGradient.addColorStop(0, color);
+                    topGradient.addColorStop(1, this.hexToRgba(color, 0.2));
                     
-                    // Top half
-                    this.ctx.fillRect(i * barWidth, this.height / 2 - barHeight / 2, barWidth - 1, barHeight / 2);
+                    this.ctx.fillStyle = topGradient;
+                    this.ctx.fillRect(x + 1, this.height / 2 - barHeight, barWidth - 2, barHeight);
                     
-                    // Bottom half (mirror)
-                    const gradient2 = this.ctx.createLinearGradient(0, this.height / 2, 0, this.height / 2 + barHeight / 2);
-                    gradient2.addColorStop(0, this.getColor(i, barCount));
-                    gradient2.addColorStop(1, this.hexToRgba(this.getColor(i, barCount), 0.1));
+                    // Bottom half (going down from center) - mirror
+                    const bottomGradient = this.ctx.createLinearGradient(x, this.height / 2, x, this.height / 2 + barHeight);
+                    bottomGradient.addColorStop(0, color);
+                    bottomGradient.addColorStop(1, this.hexToRgba(color, 0.2));
                     
-                    this.ctx.fillStyle = gradient2;
-                    this.ctx.fillRect(i * barWidth, this.height / 2, barWidth - 1, barHeight / 2);
+                    this.ctx.fillStyle = bottomGradient;
+                    this.ctx.fillRect(x + 1, this.height / 2, barWidth - 2, barHeight);
                 }
                 
                 // Center line glow
-                const avgFreq = this.dataArray.reduce((a, b) => a + b, 0) / this.dataArray.length;
-                const gradient = this.ctx.createLinearGradient(0, this.height / 2 - 20, 0, this.height / 2 + 20);
-                gradient.addColorStop(0, 'transparent');
-                gradient.addColorStop(0.5, this.hexToRgba(AppState.colors[0], avgFreq / 255 * 0.5));
-                gradient.addColorStop(1, 'transparent');
+                const avgFreq = this.frequencyData.reduce((a, b) => a + b, 0) / this.frequencyData.length;
+                const glowIntensity = avgFreq / 255;
                 
-                this.ctx.fillStyle = gradient;
-                this.ctx.fillRect(0, this.height / 2 - 20, this.width, 40);
+                const lineGradient = this.ctx.createLinearGradient(0, this.height / 2 - 15, 0, this.height / 2 + 15);
+                lineGradient.addColorStop(0, 'transparent');
+                lineGradient.addColorStop(0.5, this.hexToRgba(AppState.colors[0] === 'rainbow' ? '#ffffff' : AppState.colors[0], glowIntensity * 0.6));
+                lineGradient.addColorStop(1, 'transparent');
+                
+                this.ctx.fillStyle = lineGradient;
+                this.ctx.fillRect(0, this.height / 2 - 15, this.width, 30);
             }
 
             stop() {
                 if (this.animationId) {
                     cancelAnimationFrame(this.animationId);
+                    this.animationId = null;
                 }
             }
         }
@@ -1681,6 +1829,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 this.db = new AudioDatabase();
                 this.visualizer = new AudioVisualizer();
                 this.elements = this.cacheElements();
+                this.lastVolume = 80;
                 this.bindEvents();
             }
 
@@ -1733,13 +1882,13 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             async init() {
                 await this.db.init();
                 AppState.load();
-                this.applyState();
                 await this.loadLibrary();
+                this.applyState();
                 this.startProgressUpdate();
             }
 
             bindEvents() {
-                // Upload events
+                // Upload
                 this.elements.uploadBtn.onclick = () => this.openModal();
                 this.elements.closeModal.onclick = () => this.closeModal();
                 this.elements.uploadModal.onclick = (e) => {
@@ -1763,20 +1912,26 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                     this.handleFiles(e.dataTransfer.files);
                 };
 
-                // Player controls
+                // Player
                 this.elements.playBtn.onclick = () => this.togglePlay();
                 this.elements.prevBtn.onclick = () => this.prevTrack();
                 this.elements.nextBtn.onclick = () => this.nextTrack();
                 this.elements.progressBar.onclick = (e) => this.seek(e);
-                this.elements.volumeSlider.oninput = (e) => this.setVolume(e.target.value);
+                this.elements.volumeSlider.oninput = (e) => this.setVolume(parseInt(e.target.value));
                 this.elements.volumeBtn.onclick = () => this.toggleMute();
                 this.elements.shuffleBtn.onclick = () => this.toggleShuffle();
                 this.elements.repeatBtn.onclick = () => this.toggleRepeat();
 
                 // Audio events
                 this.visualizer.audio.onended = () => this.onTrackEnd();
-                this.visualizer.audio.onplay = () => this.updatePlayButton(true);
-                this.visualizer.audio.onpause = () => this.updatePlayButton(false);
+                this.visualizer.audio.onplay = () => {
+                    AppState.isPlaying = true;
+                    this.updatePlayButton(true);
+                };
+                this.visualizer.audio.onpause = () => {
+                    AppState.isPlaying = false;
+                    this.updatePlayButton(false);
+                };
 
                 // Settings
                 this.elements.settingsBtn.onclick = () => this.toggleSettings();
@@ -1789,19 +1944,22 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 // Fullscreen
                 this.elements.fullscreenBtn.onclick = () => this.toggleFullscreen();
 
-                // Visualization settings
+                // Viz mode
                 this.elements.vizModeOptions.onclick = (e) => {
                     if (e.target.classList.contains('setting-option')) {
                         this.setVizMode(e.target.dataset.mode);
                     }
                 };
 
+                // Colors
                 this.elements.colorOptions.onclick = (e) => {
-                    if (e.target.classList.contains('color-option')) {
-                        this.setColors(JSON.parse(e.target.dataset.colors));
+                    const option = e.target.closest('.color-option');
+                    if (option) {
+                        this.setColors(JSON.parse(option.dataset.colors));
                     }
                 };
 
+                // Sliders
                 this.elements.sensitivitySlider.oninput = (e) => {
                     AppState.sensitivity = parseInt(e.target.value);
                     this.elements.sensitivityValue.textContent = `${e.target.value}%`;
@@ -1820,6 +1978,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                     AppState.save();
                 };
 
+                // Background
                 this.elements.bgOptions.onclick = (e) => {
                     if (e.target.classList.contains('setting-option')) {
                         this.setBackground(e.target.dataset.bg);
@@ -1828,21 +1987,29 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
 
                 this.elements.resetSettings.onclick = () => this.resetSettings();
 
-                // Keyboard shortcuts
+                // Keyboard
                 document.onkeydown = (e) => this.handleKeyboard(e);
             }
 
             applyState() {
+                // Volume
                 this.elements.volumeSlider.value = AppState.volume;
                 this.visualizer.setVolume(AppState.volume);
                 
-                this.elements.shuffleBtn.style.color = AppState.shuffle ? 'var(--primary)' : '';
-                this.elements.repeatBtn.style.color = AppState.repeat ? 'var(--primary)' : '';
+                // Shuffle & Repeat
+                this.elements.shuffleBtn.classList.toggle('active', AppState.shuffle);
+                this.elements.repeatBtn.classList.toggle('active', AppState.repeat);
                 
+                // Viz mode
                 this.setVizMode(AppState.vizMode, false);
+                
+                // Colors
                 this.setColors(AppState.colors, false);
+                
+                // Background
                 this.setBackground(AppState.background, false);
                 
+                // Sliders
                 this.elements.sensitivitySlider.value = AppState.sensitivity;
                 this.elements.sensitivityValue.textContent = `${AppState.sensitivity}%`;
                 
@@ -1851,21 +2018,30 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 
                 this.elements.barCountSlider.value = AppState.barCount;
                 this.elements.barCountValue.textContent = AppState.barCount;
+                
+                // Play button state
+                this.updatePlayButton(AppState.isPlaying);
             }
 
             async loadLibrary() {
                 const files = await this.db.getAllFiles();
-                AppState.playlist = files;
+                AppState.playlist = files.sort((a, b) => b.addedAt - a.addedAt);
                 this.renderLibrary();
                 this.updateStorageInfo();
                 
-                if (files.length > 0 && AppState.currentIndex >= 0 && AppState.currentIndex < files.length) {
-                    await this.loadTrack(AppState.currentIndex, false);
+                // Restore current track
+                if (AppState.playlist.length > 0 && AppState.currentIndex >= 0) {
+                    const index = Math.min(AppState.currentIndex, AppState.playlist.length - 1);
+                    await this.loadTrack(index, false);
                 }
             }
 
             renderLibrary() {
                 const container = this.elements.libraryList;
+                
+                // Remove existing items
+                const existingItems = container.querySelectorAll('.library-item');
+                existingItems.forEach(item => item.remove());
                 
                 if (AppState.playlist.length === 0) {
                     this.elements.emptyLibrary.style.display = 'flex';
@@ -1874,13 +2050,9 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 
                 this.elements.emptyLibrary.style.display = 'none';
                 
-                // Clear existing items (except empty state)
-                const items = container.querySelectorAll('.library-item');
-                items.forEach(item => item.remove());
-                
                 AppState.playlist.forEach((file, index) => {
                     const item = document.createElement('div');
-                    item.className = `library-item ${index === AppState.currentIndex ? 'active' : ''}`;
+                    item.className = `library-item${index === AppState.currentIndex ? ' active' : ''}`;
                     item.innerHTML = `
                         <div class="library-item-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
@@ -1913,15 +2085,17 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                     item.onclick = (e) => {
                         const action = e.target.closest('[data-action]')?.dataset.action;
                         if (action === 'download') {
+                            e.stopPropagation();
                             this.downloadFile(file);
                         } else if (action === 'delete') {
+                            e.stopPropagation();
                             this.deleteFile(file.id, index);
                         } else {
                             this.loadTrack(index);
                         }
                     };
                     
-                    container.insertBefore(item, container.firstChild);
+                    container.appendChild(item);
                 });
             }
 
@@ -1943,6 +2117,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                         this.showToast(`Added: ${this.formatFileName(file.name)}`, 'success');
                     } catch (error) {
                         this.showToast(`Failed to add: ${file.name}`, 'error');
+                        console.error(error);
                     }
                 }
                 
@@ -1956,17 +2131,20 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 AppState.currentIndex = index;
                 const file = AppState.playlist[index];
                 
-                await this.visualizer.loadTrack(file);
-                
-                this.elements.trackName.textContent = this.formatFileName(file.name);
-                this.updateActiveLibraryItem();
-                
-                if (autoPlay) {
-                    this.visualizer.play();
-                    AppState.isPlaying = true;
+                try {
+                    await this.visualizer.loadTrack(file);
+                    this.elements.trackName.textContent = this.formatFileName(file.name);
+                    this.updateActiveLibraryItem();
+                    
+                    if (autoPlay) {
+                        this.visualizer.play();
+                    }
+                    
+                    AppState.save();
+                } catch (error) {
+                    console.error('Failed to load track:', error);
+                    this.showToast('Failed to load track', 'error');
                 }
-                
-                AppState.save();
             }
 
             togglePlay() {
@@ -1975,19 +2153,25 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                     return;
                 }
                 
+                if (AppState.currentIndex < 0) {
+                    this.showToast('Upload a track first', 'error');
+                    return;
+                }
+                
                 if (AppState.isPlaying) {
                     this.visualizer.pause();
                 } else {
                     this.visualizer.play();
                 }
-                AppState.isPlaying = !AppState.isPlaying;
             }
 
             updatePlayButton(isPlaying) {
-                this.elements.playIcon.innerHTML = isPlaying
-                    ? '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'
-                    : '<polygon points="5 3 19 12 5 21 5 3"/>';
-                
+                const icon = this.elements.playIcon;
+                if (isPlaying) {
+                    icon.innerHTML = '<rect x="6" y="4" width="4" height="16" fill="white"/><rect x="14" y="4" width="4" height="16" fill="white"/>';
+                } else {
+                    icon.innerHTML = '<polygon points="5 3 19 12 5 21 5 3" fill="white"/>';
+                }
                 document.body.classList.toggle('playing', isPlaying);
             }
 
@@ -2031,17 +2215,17 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             seek(e) {
                 const rect = this.elements.progressBar.getBoundingClientRect();
                 const percent = ((e.clientX - rect.left) / rect.width) * 100;
-                this.visualizer.seek(percent);
+                this.visualizer.seek(Math.max(0, Math.min(100, percent)));
             }
 
             setVolume(value) {
-                AppState.volume = parseInt(value);
+                AppState.volume = value;
                 this.visualizer.setVolume(value);
                 AppState.save();
             }
 
             toggleMute() {
-                if (this.visualizer.audio.volume > 0) {
+                if (AppState.volume > 0) {
                     this.lastVolume = AppState.volume;
                     this.setVolume(0);
                     this.elements.volumeSlider.value = 0;
@@ -2053,14 +2237,14 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
 
             toggleShuffle() {
                 AppState.shuffle = !AppState.shuffle;
-                this.elements.shuffleBtn.style.color = AppState.shuffle ? 'var(--primary)' : '';
+                this.elements.shuffleBtn.classList.toggle('active', AppState.shuffle);
                 AppState.save();
                 this.showToast(`Shuffle ${AppState.shuffle ? 'on' : 'off'}`);
             }
 
             toggleRepeat() {
                 AppState.repeat = !AppState.repeat;
-                this.elements.repeatBtn.style.color = AppState.repeat ? 'var(--primary)' : '';
+                this.elements.repeatBtn.classList.toggle('active', AppState.repeat);
                 AppState.save();
                 this.showToast(`Repeat ${AppState.repeat ? 'on' : 'off'}`);
             }
@@ -2076,8 +2260,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             updateActiveLibraryItem() {
                 const items = this.elements.libraryList.querySelectorAll('.library-item');
                 items.forEach((item, i) => {
-                    const reverseIndex = items.length - 1 - i;
-                    item.classList.toggle('active', reverseIndex === AppState.currentIndex);
+                    item.classList.toggle('active', i === AppState.currentIndex);
                 });
             }
 
@@ -2095,7 +2278,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                     particles: 'Particles Visualization',
                     spectrum: 'Spectrum Visualization'
                 };
-                this.elements.vizMode.textContent = modeNames[mode];
+                this.elements.vizMode.textContent = modeNames[mode] || 'Visualization';
                 
                 if (save) AppState.save();
             }
@@ -2105,7 +2288,8 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 
                 this.elements.colorOptions.querySelectorAll('.color-option').forEach(opt => {
                     const optColors = JSON.parse(opt.dataset.colors);
-                    opt.classList.toggle('active', JSON.stringify(optColors) === JSON.stringify(colors));
+                    const match = JSON.stringify(optColors) === JSON.stringify(colors);
+                    opt.classList.toggle('active', match);
                 });
                 
                 if (save) AppState.save();
@@ -2131,22 +2315,24 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 
                 this.applyState();
                 AppState.save();
-                this.showToast('Settings reset to defaults');
+                this.showToast('Settings reset');
             }
 
             toggleSettings(open) {
+                const panel = this.elements.settingsPanel;
                 if (open === undefined) {
-                    this.elements.settingsPanel.classList.toggle('open');
+                    panel.classList.toggle('open');
                 } else {
-                    this.elements.settingsPanel.classList.toggle('open', open);
+                    panel.classList.toggle('open', open);
                 }
             }
 
             toggleSidebar(open) {
+                const sidebar = this.elements.sidebar;
                 if (open === undefined) {
-                    this.elements.sidebar.classList.toggle('open');
+                    sidebar.classList.toggle('open');
                 } else {
-                    this.elements.sidebar.classList.toggle('open', open);
+                    sidebar.classList.toggle('open', open);
                 }
             }
 
@@ -2163,12 +2349,16 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 
                 if (index === AppState.currentIndex) {
                     this.visualizer.pause();
+                    this.visualizer.audio.src = '';
                     AppState.currentIndex = -1;
+                    AppState.isPlaying = false;
                     this.elements.trackName.textContent = 'No Track Selected';
+                    this.updatePlayButton(false);
                 } else if (index < AppState.currentIndex) {
                     AppState.currentIndex--;
                 }
                 
+                AppState.save();
                 await this.loadLibrary();
                 this.showToast('File deleted', 'success');
             }
@@ -2179,7 +2369,9 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 const a = document.createElement('a');
                 a.href = url;
                 a.download = file.name;
+                document.body.appendChild(a);
                 a.click();
+                document.body.removeChild(a);
                 URL.revokeObjectURL(url);
                 this.showToast('Download started', 'success');
             }
@@ -2202,7 +2394,7 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             }
 
             formatFileName(name) {
-                return name.replace(/\.[^/.]+$/, '').substring(0, 40);
+                return name.replace(/\.[^/.]+$/, '').substring(0, 50);
             }
 
             formatSize(bytes) {
@@ -2228,31 +2420,42 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
                 
                 setTimeout(() => {
                     toast.style.opacity = '0';
+                    toast.style.transition = 'opacity 0.3s';
                     setTimeout(() => toast.remove(), 300);
                 }, 3000);
             }
 
             handleKeyboard(e) {
+                // Don't trigger if typing in input
+                if (e.target.tagName === 'INPUT') return;
+                
                 switch (e.code) {
                     case 'Space':
                         e.preventDefault();
                         this.togglePlay();
                         break;
                     case 'ArrowLeft':
-                        this.visualizer.audio.currentTime -= 5;
+                        e.preventDefault();
+                        this.visualizer.audio.currentTime = Math.max(0, this.visualizer.audio.currentTime - 5);
                         break;
                     case 'ArrowRight':
-                        this.visualizer.audio.currentTime += 5;
+                        e.preventDefault();
+                        this.visualizer.audio.currentTime = Math.min(
+                            this.visualizer.audio.duration || 0,
+                            this.visualizer.audio.currentTime + 5
+                        );
                         break;
                     case 'ArrowUp':
                         e.preventDefault();
-                        this.setVolume(Math.min(100, AppState.volume + 5));
-                        this.elements.volumeSlider.value = AppState.volume;
+                        const newVolUp = Math.min(100, AppState.volume + 5);
+                        this.setVolume(newVolUp);
+                        this.elements.volumeSlider.value = newVolUp;
                         break;
                     case 'ArrowDown':
                         e.preventDefault();
-                        this.setVolume(Math.max(0, AppState.volume - 5));
-                        this.elements.volumeSlider.value = AppState.volume;
+                        const newVolDown = Math.max(0, AppState.volume - 5);
+                        this.setVolume(newVolDown);
+                        this.elements.volumeSlider.value = newVolDown;
                         break;
                     case 'KeyM':
                         this.toggleMute();
@@ -2264,9 +2467,9 @@ Copyright (c) 2025 Yuliya Kolesnikova <0009-0000-6151-7415@orcid.org>
             }
         }
 
-        // ==================== Initialize App ====================
+        // ==================== Initialize ====================
         const app = new UIController();
-        app.init();
+        app.init().catch(console.error);
     </script>
 </body>
 </html>
