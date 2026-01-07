@@ -5,7 +5,7 @@ A beautiful, responsive audio visualizer web application that creates stunning r
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Live-brightgreen)](https://musicvisualizer.github.io)
 
-![Music Visualizer Screenshot](https://raw.githubusercontent.com/musicvisualizer/musicvisualizer.github.io/main/screenshot.png)
+![Music Visualizer Screenshot](screenshot.png)
 
 ## 🌐 Live Demo
 
