@@ -5,8 +5,8 @@ authors:
   given-names: "Yuliya"
   orcid: "https://orcid.org/0009-0000-6151-7415"
 title: "Music Visualizer"
-version: 1.0
-doi: 10.5281/zenodo.18172774
-date-released: 2026-01-07
+version: 2.0
+doi: 10.5281/zenodo.19730408
+date-released: 2026-04-24
 url: "https://github.com/musicvisualizer/musicvisualizer.github.io"
 license: MIT
